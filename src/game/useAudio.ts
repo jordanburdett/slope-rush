@@ -9,6 +9,19 @@ const TIER_FREQ: Record<SpeedTier, number> = {
   4: 220,
 }
 
+/**
+ * Semitone offsets for each obstacle type.
+ * Applied to the lead voice when the ball enters an obstacle zone.
+ * Exported for unit test coverage.
+ */
+export const CHORD_DEGREES: Record<string, number> = {
+  'narrowing':  3,   // minor third — tension
+  'gap':        6,   // tritone — maximum tension
+  'spike':      1,   // minor second — harsh dissonance
+  'speed_pad':  11,  // major seventh — bright resolution
+  'none':       0,   // root, no change
+}
+
 export interface AudioControls {
   /** Call inside the user-gesture handler (startGame) to create AudioContext */
   startAudio: () => void
@@ -22,10 +35,19 @@ export interface AudioControls {
   setTier: (tier: SpeedTier) => void
   /** Set master filter cutoff directly (called every frame — no ramp) */
   setFilterCutoff: (hz: number) => void
+  /**
+   * Trigger a chord-degree bend on the lead oscillator for the given obstacle type.
+   * Bends to the target semitone offset immediately, then returns to root after 200ms.
+   * No-op when lead gain is 0 (tiers 1–2, lead not yet active).
+   */
+  triggerObstacle: (type: string) => void
 }
 
 export function useAudio(): AudioControls {
   const audioCtxRef = useRef<AudioContext | null>(null)
+
+  // Tracks current tier root frequency so triggerObstacle can compute lead target Hz
+  const currentRootHzRef = useRef<number>(80)
 
   // Four persistent voice oscillators
   const bassOscRef = useRef<OscillatorNode | null>(null)
@@ -229,6 +251,9 @@ export function useAudio(): AudioControls {
       const rootFreq = TIER_FREQ[tier]
       const timeConstant = 0.1
 
+      // Track the current root so triggerObstacle can compute lead target Hz
+      currentRootHzRef.current = rootFreq
+
       if (bassOsc) {
         bassOsc.frequency.setTargetAtTime(rootFreq, ctx.currentTime, timeConstant)
       }
@@ -241,6 +266,29 @@ export function useAudio(): AudioControls {
       if (arpOsc) {
         arpOsc.frequency.setTargetAtTime(rootFreq, ctx.currentTime, timeConstant)
       }
+    } catch { /* ignore */ }
+  }, [])
+
+  const triggerObstacle = useCallback((type: string) => {
+    const ctx = audioCtxRef.current
+    const leadOsc = leadOscRef.current
+    const leadGain = leadGainRef.current
+    if (!ctx || !leadOsc || !leadGain) return
+
+    // Skip if lead is silent (tiers 1–2 where lead hasn't been activated yet)
+    if (leadGain.gain.value === 0) return
+
+    try {
+      const semitones = CHORD_DEGREES[type] ?? 0
+      const rootHz = currentRootHzRef.current
+      // Lead voice runs at root × 2 (one octave up)
+      const leadBaseHz = rootHz * 2
+      const targetHz = leadBaseHz * Math.pow(2, semitones / 12)
+      const now = ctx.currentTime
+
+      // Snap to target immediately, then return to base after 200ms
+      leadOsc.frequency.setTargetAtTime(targetHz, now, 0.01)
+      leadOsc.frequency.setTargetAtTime(leadBaseHz, now + 0.2, 0.01)
     } catch { /* ignore */ }
   }, [])
 
@@ -257,5 +305,5 @@ export function useAudio(): AudioControls {
     return () => stopAudio()
   }, [stopAudio])
 
-  return { startAudio, stopAudio, triggerDeath, triggerTierUp, setTier, setFilterCutoff }
+  return { startAudio, stopAudio, triggerDeath, triggerTierUp, setTier, setFilterCutoff, triggerObstacle }
 }

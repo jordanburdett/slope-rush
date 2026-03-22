@@ -87,6 +87,7 @@ export const ObstacleType = {
   NARROWING: 'narrowing',
   GAP: 'gap',
   SPIKE: 'spike',
+  SPEED_PAD: 'speed_pad',
 } as const
 export type ObstacleType = typeof ObstacleType[keyof typeof ObstacleType]
 

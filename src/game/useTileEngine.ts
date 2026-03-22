@@ -34,15 +34,23 @@ let nextTileId = TILE_COUNT
 /**
  * Pick an obstacle type based on tile generation index (how many tiles have been created).
  * tileGenIndex = 0 is the first tile ever spawned.
+ *
+ * Distribution among obstacle tiles:
+ *   NARROWING  ~35%
+ *   GAP        ~29%
+ *   SPIKE      ~24%
+ *   SPEED_PAD  ~12%
+ * (proportions from: 30/85, 25/85, 20/85, 10/85 — normalized to sum 1)
  */
 function pickObstacleType(tileGenIndex: number): ObstacleTypeValue {
   const prob = getObstacleProbability(tileGenIndex)
   if (Math.random() >= prob) return ObstacleType.NONE
-  // Equally distribute among three obstacle types
+  // Weighted distribution: NARROWING ~30, GAP ~25, SPIKE ~20, SPEED_PAD ~10 (total 85)
   const r = Math.random()
-  if (r < 1 / 3) return ObstacleType.NARROWING
-  if (r < 2 / 3) return ObstacleType.GAP
-  return ObstacleType.SPIKE
+  if (r < 30 / 85) return ObstacleType.NARROWING
+  if (r < 55 / 85) return ObstacleType.GAP
+  if (r < 75 / 85) return ObstacleType.SPIKE
+  return ObstacleType.SPEED_PAD
 }
 
 /**

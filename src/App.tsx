@@ -24,6 +24,7 @@ import {
   getTierLabel,
   getSpeedTier,
   INITIAL_SPEED,
+  MAX_SPEED,
   NARROWING_HALF,
   NARROWING_WALL_WIDTH,
   SPIKE_RADIUS,
@@ -98,6 +99,10 @@ function Track({ tilesRef, tierColorRef }: TrackProps) {
   const spikeGroupRefs = useRef<Array<THREE.Group | null>>(
     Array.from({ length: TILE_COUNT }, () => null),
   )
+  // Speed pad mesh refs per tile
+  const speedPadMeshRefs = useRef<Array<THREE.Mesh | null>>(
+    Array.from({ length: TILE_COUNT }, () => null),
+  )
 
   // Track which tile index had which obstacle last time we set it up
   const lastObstacleTypeRef = useRef<Array<string>>(
@@ -155,6 +160,12 @@ function Track({ tilesRef, tierColorRef }: TrackProps) {
               }
             }
           }
+        }
+
+        // Speed pad mesh
+        const sp = speedPadMeshRefs.current[i]
+        if (sp) {
+          sp.visible = tile.obstacleType === ObstacleType.SPEED_PAD
         }
       }
 
@@ -290,6 +301,21 @@ function Track({ tilesRef, tierColorRef }: TrackProps) {
                 )
               })}
             </group>
+            {/* Speed pad — flat cyan glowing plate (collectible, no death collision) */}
+            <mesh
+              ref={(el) => { speedPadMeshRefs.current[i] = el }}
+              position={[0, TILE_HEIGHT / 2 + 0.1, 0]}
+              visible={tile.obstacleType === ObstacleType.SPEED_PAD}
+            >
+              <boxGeometry args={[2, 0.1, 2]} />
+              <meshStandardMaterial
+                color="#00FFFF"
+                emissive="#00FFFF"
+                emissiveIntensity={0.8}
+                roughness={0.1}
+                metalness={0.3}
+              />
+            </mesh>
           </group>
         )
       })}
@@ -502,6 +528,7 @@ interface GameLoopProps {
   ballMeshRef: React.MutableRefObject<THREE.Mesh | null>
   audioSetTier: (tier: SpeedTier) => void
   audioTriggerTierUp: () => void
+  audioTriggerObstacle: (type: string) => void
 }
 
 function GameLoop({
@@ -515,7 +542,15 @@ function GameLoop({
   ballMeshRef,
   audioSetTier,
   audioTriggerTierUp,
+  audioTriggerObstacle,
 }: GameLoopProps) {
+  // Track the last tile ID that triggered a narrowing audio event (fire once per tile)
+  const lastNarrowingTriggerRef = useRef<number>(-1)
+  // Track the last tile ID that triggered a spike audio event (fire once per tile)
+  const lastSpikeTriggerRef = useRef<number>(-1)
+  // Track collected speed pad tile IDs (reset on restart via tile ID recycling)
+  const collectedSpeedPadsRef = useRef<Set<number>>(new Set())
+
   useFrame((_state, delta) => {
     // Only run physics when alive
     if (gameState.phaseRef.current !== GamePhase.PLAYING) return
@@ -542,6 +577,35 @@ function GameLoop({
     // 5. Ball roll animation
     if (ballMeshRef.current) {
       ballMeshRef.current.rotation.x += gameState.speedRef.current * clampedDelta * 0.3
+    }
+
+    // 5b. Obstacle audio triggers + speed pad collection
+    const bzA = ball.zRef.current
+    for (const tile of tilesRef.current) {
+      const halfD = TILE_DEPTH / 2
+      const inTileZ = bzA >= tile.z - halfD && bzA <= tile.z + halfD
+
+      if (tile.obstacleType === ObstacleType.NARROWING && inTileZ) {
+        if (lastNarrowingTriggerRef.current !== tile.id) {
+          lastNarrowingTriggerRef.current = tile.id
+          audioTriggerObstacle('narrowing')
+        }
+      } else if (tile.obstacleType === ObstacleType.SPIKE && inTileZ) {
+        if (lastSpikeTriggerRef.current !== tile.id) {
+          lastSpikeTriggerRef.current = tile.id
+          audioTriggerObstacle('spike')
+        }
+      } else if (tile.obstacleType === ObstacleType.SPEED_PAD && inTileZ) {
+        if (!collectedSpeedPadsRef.current.has(tile.id)) {
+          collectedSpeedPadsRef.current.add(tile.id)
+          // Boost speed, cap at MAX_SPEED
+          gameState.speedRef.current = Math.min(
+            gameState.speedRef.current + 3,
+            MAX_SPEED,
+          )
+          audioTriggerObstacle('speed_pad')
+        }
+      }
     }
 
     // 6. Death detection
@@ -973,6 +1037,7 @@ interface SceneProps {
   ballMeshRef: React.MutableRefObject<THREE.Mesh | null>
   audioSetTier: (tier: SpeedTier) => void
   audioTriggerTierUp: () => void
+  audioTriggerObstacle: (type: string) => void
 }
 
 function Scene({
@@ -988,6 +1053,7 @@ function Scene({
   ballMeshRef,
   audioSetTier,
   audioTriggerTierUp,
+  audioTriggerObstacle,
 }: SceneProps) {
   return (
     <>
@@ -1020,6 +1086,7 @@ function Scene({
         ballMeshRef={ballMeshRef}
         audioSetTier={audioSetTier}
         audioTriggerTierUp={audioTriggerTierUp}
+        audioTriggerObstacle={audioTriggerObstacle}
       />
     </>
   )
@@ -1232,6 +1299,7 @@ export default function App() {
           ballMeshRef={ballMeshRef}
           audioSetTier={audio.setTier}
           audioTriggerTierUp={audio.triggerTierUp}
+          audioTriggerObstacle={audio.triggerObstacle}
         />
       </Canvas>
 
