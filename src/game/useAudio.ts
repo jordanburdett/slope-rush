@@ -1,7 +1,7 @@
 import { useRef, useCallback } from 'react'
 import type { SpeedTier } from './constants'
 
-// Hum frequency per tier
+// Root frequency per tier — all 4 voices derive from this root
 const TIER_FREQ: Record<SpeedTier, number> = {
   1: 80,
   2: 120,
@@ -12,20 +12,36 @@ const TIER_FREQ: Record<SpeedTier, number> = {
 export interface AudioControls {
   /** Call inside the user-gesture handler (startGame) to create AudioContext */
   startAudio: () => void
-  /** Fade hum out and stop (on death) */
+  /** Ramp master gain to 0 over 0.5s then close context (on death) */
   stopAudio: () => void
-  /** Trigger death noise burst */
+  /** Trigger death noise burst — routes direct to destination, unaffected by master ramp */
   triggerDeath: () => void
-  /** Trigger tier-up chime */
+  /** Trigger tier-up chime — routes direct to destination, unaffected by master ramp */
   triggerTierUp: () => void
-  /** Update hum frequency for new tier */
+  /** Update all voice frequencies for new tier */
   setTier: (tier: SpeedTier) => void
+  /** Set master filter cutoff directly (called every frame — no ramp) */
+  setFilterCutoff: (hz: number) => void
 }
 
 export function useAudio(): AudioControls {
   const audioCtxRef = useRef<AudioContext | null>(null)
-  const humOscRef = useRef<OscillatorNode | null>(null)
-  const humGainRef = useRef<GainNode | null>(null)
+
+  // Four persistent voice oscillators
+  const bassOscRef = useRef<OscillatorNode | null>(null)
+  const padOscRef = useRef<OscillatorNode | null>(null)
+  const leadOscRef = useRef<OscillatorNode | null>(null)
+  const arpOscRef = useRef<OscillatorNode | null>(null)
+
+  // Per-voice gain nodes
+  const bassGainRef = useRef<GainNode | null>(null)
+  const padGainRef = useRef<GainNode | null>(null)
+  const leadGainRef = useRef<GainNode | null>(null)
+  const arpGainRef = useRef<GainNode | null>(null)
+
+  // Master bus
+  const masterGainRef = useRef<GainNode | null>(null)
+  const masterFilterRef = useRef<BiquadFilterNode | null>(null)
 
   const startAudio = useCallback(() => {
     // Guard: already running
@@ -35,18 +51,83 @@ export function useAudio(): AudioControls {
       const ctx = new AudioContext()
       audioCtxRef.current = ctx
 
-      // Master hum oscillator
-      const osc = ctx.createOscillator()
-      const gain = ctx.createGain()
-      osc.type = 'sine'
-      osc.frequency.setValueAtTime(TIER_FREQ[1], ctx.currentTime)
-      gain.gain.setValueAtTime(0.08, ctx.currentTime)
-      osc.connect(gain)
-      gain.connect(ctx.destination)
-      osc.start()
+      const rootFreq = TIER_FREQ[1]
 
-      humOscRef.current = osc
-      humGainRef.current = gain
+      // ── Master bus ───────────────────────────────────────────────────────
+      const masterGain = ctx.createGain()
+      masterGain.gain.setValueAtTime(0.7, ctx.currentTime)
+
+      const masterFilter = ctx.createBiquadFilter()
+      masterFilter.type = 'lowpass'
+      masterFilter.Q.setValueAtTime(1.0, ctx.currentTime)
+      masterFilter.frequency.setValueAtTime(400, ctx.currentTime)
+
+      // Chain: masterGain → masterFilter → destination
+      masterGain.connect(masterFilter)
+      masterFilter.connect(ctx.destination)
+
+      masterGainRef.current = masterGain
+      masterFilterRef.current = masterFilter
+
+      // ── Bass voice ───────────────────────────────────────────────────────
+      const bassOsc = ctx.createOscillator()
+      bassOsc.type = 'sawtooth'
+      bassOsc.frequency.setValueAtTime(rootFreq, ctx.currentTime)
+
+      const bassGain = ctx.createGain()
+      bassGain.gain.setValueAtTime(0.18, ctx.currentTime)
+
+      bassOsc.connect(bassGain)
+      bassGain.connect(masterGain)
+      bassOsc.start()
+
+      bassOscRef.current = bassOsc
+      bassGainRef.current = bassGain
+
+      // ── Pad voice (root + fifth = root * 1.5) ───────────────────────────
+      const padOsc = ctx.createOscillator()
+      padOsc.type = 'sine'
+      padOsc.frequency.setValueAtTime(rootFreq * 1.5, ctx.currentTime)
+
+      const padGain = ctx.createGain()
+      padGain.gain.setValueAtTime(0.04, ctx.currentTime)
+
+      padOsc.connect(padGain)
+      padGain.connect(masterGain)
+      padOsc.start()
+
+      padOscRef.current = padOsc
+      padGainRef.current = padGain
+
+      // ── Lead voice (root + octave = root * 2) — starts silent ───────────
+      const leadOsc = ctx.createOscillator()
+      leadOsc.type = 'square'
+      leadOsc.frequency.setValueAtTime(rootFreq * 2, ctx.currentTime)
+
+      const leadGain = ctx.createGain()
+      leadGain.gain.setValueAtTime(0.0, ctx.currentTime)
+
+      leadOsc.connect(leadGain)
+      leadGain.connect(masterGain)
+      leadOsc.start()
+
+      leadOscRef.current = leadOsc
+      leadGainRef.current = leadGain
+
+      // ── Arpeggio voice — starts silent; scheduling deferred to story-003 ─
+      const arpOsc = ctx.createOscillator()
+      arpOsc.type = 'triangle'
+      arpOsc.frequency.setValueAtTime(rootFreq, ctx.currentTime)
+
+      const arpGain = ctx.createGain()
+      arpGain.gain.setValueAtTime(0.0, ctx.currentTime)
+
+      arpOsc.connect(arpGain)
+      arpGain.connect(masterGain)
+      arpOsc.start()
+
+      arpOscRef.current = arpOsc
+      arpGainRef.current = arpGain
     } catch {
       // Web Audio not available — silently continue
     }
@@ -54,22 +135,33 @@ export function useAudio(): AudioControls {
 
   const stopAudio = useCallback(() => {
     const ctx = audioCtxRef.current
-    const gain = humGainRef.current
-    const osc = humOscRef.current
-    if (!ctx || !gain) return
+    const masterGain = masterGainRef.current
+    if (!ctx || !masterGain) return
 
-    // Fade out over 200ms then tear down — capture ctx at call time to avoid
-    // a stale timeout silencing a freshly-created AudioContext on restart
-    gain.gain.setTargetAtTime(0, ctx.currentTime, 0.06)
+    // Ramp master gain to 0 over 0.5s then tear down — capture ctx at call
+    // time to avoid a stale timeout silencing a freshly-created AudioContext
+    // on restart (the restart race guard)
+    masterGain.gain.setTargetAtTime(0, ctx.currentTime, 0.15)
     setTimeout(() => {
       // Only act if this is still the same context (not a restarted one)
       if (audioCtxRef.current !== ctx) return
-      try { osc?.stop() } catch { /* oscillator may already be stopped */ }
+      try { bassOscRef.current?.stop() } catch { /* already stopped */ }
+      try { padOscRef.current?.stop() } catch { /* already stopped */ }
+      try { leadOscRef.current?.stop() } catch { /* already stopped */ }
+      try { arpOscRef.current?.stop() } catch { /* already stopped */ }
       try { ctx.close() } catch { /* ignore */ }
       audioCtxRef.current = null
-      humOscRef.current = null
-      humGainRef.current = null
-    }, 300)
+      bassOscRef.current = null
+      padOscRef.current = null
+      leadOscRef.current = null
+      arpOscRef.current = null
+      bassGainRef.current = null
+      padGainRef.current = null
+      leadGainRef.current = null
+      arpGainRef.current = null
+      masterGainRef.current = null
+      masterFilterRef.current = null
+    }, 600)
   }, [])
 
   const triggerDeath = useCallback(() => {
@@ -77,7 +169,8 @@ export function useAudio(): AudioControls {
     if (!ctx) return
 
     try {
-      // White noise burst — 300ms
+      // White noise burst — 300ms, routed DIRECT to destination (not via
+      // master gain) so it fires even after master has ramped to 0 on death
       const bufferSize = Math.floor(ctx.sampleRate * 0.3)
       const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate)
       const data = buffer.getChannelData(0)
@@ -104,7 +197,8 @@ export function useAudio(): AudioControls {
     try {
       const now = ctx.currentTime
 
-      // Two-note chime: C5 (523Hz) + G5 (784Hz), 100ms with quick envelope
+      // Two-note chime: C5 (523Hz) + G5 (784Hz), routed DIRECT to destination
+      // so it fires even if master gain is ramping down
       const frequencies = [523, 784]
       for (const freq of frequencies) {
         const osc = ctx.createOscillator()
@@ -124,13 +218,38 @@ export function useAudio(): AudioControls {
 
   const setTier = useCallback((tier: SpeedTier) => {
     const ctx = audioCtxRef.current
-    const osc = humOscRef.current
-    if (!ctx || !osc) return
+    const bassOsc = bassOscRef.current
+    const padOsc = padOscRef.current
+    const leadOsc = leadOscRef.current
+    const arpOsc = arpOscRef.current
+    if (!ctx) return
 
     try {
-      osc.frequency.setTargetAtTime(TIER_FREQ[tier], ctx.currentTime, 0.1)
+      const rootFreq = TIER_FREQ[tier]
+      const timeConstant = 0.1
+
+      if (bassOsc) {
+        bassOsc.frequency.setTargetAtTime(rootFreq, ctx.currentTime, timeConstant)
+      }
+      if (padOsc) {
+        padOsc.frequency.setTargetAtTime(rootFreq * 1.5, ctx.currentTime, timeConstant)
+      }
+      if (leadOsc) {
+        leadOsc.frequency.setTargetAtTime(rootFreq * 2, ctx.currentTime, timeConstant)
+      }
+      if (arpOsc) {
+        arpOsc.frequency.setTargetAtTime(rootFreq, ctx.currentTime, timeConstant)
+      }
     } catch { /* ignore */ }
   }, [])
 
-  return { startAudio, stopAudio, triggerDeath, triggerTierUp, setTier }
+  const setFilterCutoff = useCallback((hz: number) => {
+    const filter = masterFilterRef.current
+    if (!filter) return
+    try {
+      filter.frequency.value = hz
+    } catch { /* ignore */ }
+  }, [])
+
+  return { startAudio, stopAudio, triggerDeath, triggerTierUp, setTier, setFilterCutoff }
 }
