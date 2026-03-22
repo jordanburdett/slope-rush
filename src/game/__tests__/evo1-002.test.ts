@@ -382,6 +382,7 @@ describe('triggerObstacle — lead oscillator bend', () => {
     const leadGain = registry.gains[3]
     leadGain.gain.value = 0.1 // non-zero → guard bypassed
 
+    act(() => { result.current.setTier(3) })
     act(() => { result.current.triggerObstacle('spike') })
 
     // 'spike' → semitone 1. Root is 80 (tier 1). Lead base = 80*2 = 160.
@@ -400,6 +401,7 @@ describe('triggerObstacle — lead oscillator bend', () => {
     const leadGain = registry.gains[3]
     leadGain.gain.value = 0.1
 
+    act(() => { result.current.setTier(3) })
     act(() => { result.current.triggerObstacle(ObstacleType.SPEED_PAD) })
 
     const leadOsc = registry.oscillators[2]
@@ -415,6 +417,7 @@ describe('triggerObstacle — lead oscillator bend', () => {
     const leadGain = registry.gains[3]
     leadGain.gain.value = 0.1
 
+    act(() => { result.current.setTier(3) })
     act(() => { result.current.triggerObstacle('unknown_type') })
 
     const leadOsc = registry.oscillators[2]
@@ -429,6 +432,7 @@ describe('triggerObstacle — lead oscillator bend', () => {
     const leadGain = registry.gains[3]
     leadGain.gain.value = 0.1
 
+    act(() => { result.current.setTier(3) })
     act(() => { result.current.triggerObstacle('gap') })
 
     const leadOsc = registry.oscillators[2]
