@@ -1,4 +1,4 @@
-import { useRef } from 'react'
+import { useCallback, useRef } from 'react'
 import {
   INITIAL_SPEED,
   MAX_SPEED,
@@ -16,6 +16,8 @@ export interface GameStateRefs {
   tierRef: React.MutableRefObject<SpeedTier>
   phaseRef: React.MutableRefObject<GamePhase>
   lastSpeedUpDistRef: React.MutableRefObject<number>
+  resetState: (speed: number) => void
+  setPhase: (phase: GamePhase) => void
 }
 
 export function useGameState(): GameStateRefs {
@@ -25,7 +27,18 @@ export function useGameState(): GameStateRefs {
   const phaseRef = useRef<GamePhase>(GamePhaseConst.PLAYING)
   const lastSpeedUpDistRef = useRef<number>(0)
 
-  return { speedRef, distanceRef, tierRef, phaseRef, lastSpeedUpDistRef }
+  const resetState = useCallback((speed: number) => {
+    speedRef.current = speed
+    distanceRef.current = 0
+    tierRef.current = getSpeedTier(speed)
+    lastSpeedUpDistRef.current = 0
+  }, [])
+
+  const setPhase = useCallback((phase: GamePhase) => {
+    phaseRef.current = phase
+  }, [])
+
+  return { speedRef, distanceRef, tierRef, phaseRef, lastSpeedUpDistRef, resetState, setPhase }
 }
 
 /**

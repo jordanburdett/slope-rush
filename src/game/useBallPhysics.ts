@@ -1,15 +1,19 @@
-import { useRef } from 'react'
+import { useCallback, useRef } from 'react'
 import {
   LATERAL_ACCEL,
   LATERAL_DECEL,
   MAX_LATERAL_VEL,
   TRACK_HALF_WIDTH,
+  BALL_Y,
 } from './constants'
 
 export interface BallRefs {
   xRef: React.MutableRefObject<number>
   vxRef: React.MutableRefObject<number>
+  yRef: React.MutableRefObject<number>
+  vyRef: React.MutableRefObject<number>
   zRef: React.MutableRefObject<number>
+  resetBall: () => void
 }
 
 export interface KeysRef {
@@ -20,12 +24,22 @@ export interface KeysRef {
 export function useBallPhysics(): { ball: BallRefs; keysRef: React.MutableRefObject<KeysRef> } {
   const xRef = useRef<number>(0)
   const vxRef = useRef<number>(0)
+  const yRef = useRef<number>(BALL_Y)
+  const vyRef = useRef<number>(0)
   const zRef = useRef<number>(0)
 
   const keysRef = useRef<KeysRef>({ left: false, right: false })
 
+  const resetBall = useCallback(() => {
+    xRef.current = 0
+    vxRef.current = 0
+    yRef.current = BALL_Y
+    vyRef.current = 0
+    zRef.current = 0
+  }, [])
+
   return {
-    ball: { xRef, vxRef, zRef },
+    ball: { xRef, vxRef, yRef, vyRef, zRef, resetBall },
     keysRef,
   }
 }
@@ -33,14 +47,16 @@ export function useBallPhysics(): { ball: BallRefs; keysRef: React.MutableRefObj
 /**
  * Advance lateral ball physics by one frame.
  * Returns new x position.
+ * applyGravity: when true (ball over gap) apply gravity to vy and update y.
  */
 export function tickBallPhysics(
   ball: BallRefs,
   keysRef: React.MutableRefObject<KeysRef>,
   forwardSpeed: number,
   delta: number,
+  applyGravity = false,
 ): number {
-  const { xRef, vxRef, zRef } = ball
+  const { xRef, vxRef, yRef, vyRef, zRef } = ball
   const { left, right } = keysRef.current
 
   let vx = vxRef.current
@@ -71,6 +87,16 @@ export function tickBallPhysics(
     vxRef.current = 0
   }
   xRef.current = newX
+
+  // Vertical physics (gap fall)
+  if (applyGravity) {
+    vyRef.current -= 9.8 * delta
+    yRef.current += vyRef.current * delta
+  } else {
+    // Reset to track surface when not in gap
+    yRef.current = BALL_Y
+    vyRef.current = 0
+  }
 
   // Move forward
   zRef.current -= forwardSpeed * delta

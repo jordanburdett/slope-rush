@@ -68,3 +68,39 @@ export const GamePhase = {
   DEAD: 'dead',
 } as const
 export type GamePhase = typeof GamePhase[keyof typeof GamePhase]
+
+// Obstacles
+export const ObstacleType = {
+  NONE: 'none',
+  NARROWING: 'narrowing',
+  GAP: 'gap',
+  SPIKE: 'spike',
+} as const
+export type ObstacleType = typeof ObstacleType[keyof typeof ObstacleType]
+
+// Narrowing wall: navigable lane is 3 units wide, walls at x=±1.5
+export const NARROWING_HALF = 1.5  // wall inner edge x position
+export const NARROWING_WALL_WIDTH = (TILE_WIDTH / 2 - NARROWING_HALF)  // width of each narrowing wall
+
+// Spike dimensions
+export const SPIKE_RADIUS = 0.4
+export const SPIKE_HEIGHT = 1.2
+
+// Death thresholds
+export const DEATH_Y = -0.5
+export const NARROWING_DEATH_X = 1.5
+
+// Fragment count on death
+export const FRAGMENT_COUNT = 8
+export const FRAGMENT_RADIUS = 0.15
+
+// localStorage key for personal best
+export const BEST_KEY = 'slope-rush-best'
+
+// Obstacle probability tiers by tile index
+export function getObstacleProbability(tileIndex: number): number {
+  if (tileIndex < 6) return 0
+  if (tileIndex < 16) return 0.08
+  if (tileIndex < 30) return 0.15
+  return 0.25
+}
