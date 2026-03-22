@@ -86,6 +86,10 @@ export function useAudio(): AudioControls {
   // Arpeggio step counter
   const arpStepRef = useRef<number>(0)
 
+  // Tracks whether the lead voice is active (tiers 3–4 only)
+  // Using a ref avoids reading AudioParam.value during a gain ramp
+  const leadActiveRef = useRef<boolean>(false)
+
   const stopSchedulers = useCallback(() => {
     if (arpeggioTimeoutRef.current !== null) {
       clearInterval(arpeggioTimeoutRef.current as unknown as ReturnType<typeof setInterval>)
@@ -106,16 +110,26 @@ export function useAudio(): AudioControls {
     const bpm = TIER_BPM[currentTierRef.current]
     const intervalMs = 60000 / (bpm * 4) // 16th note at current tier BPM
 
-    // Tick function captures refs — re-reads BPM each tick so tier changes take effect
-    const tick = () => {
+    // Track the interval duration this scheduler instance was started with
+    let currentIntervalMs = intervalMs
+
+    const arpeggioInterval = setInterval(() => {
       if (audioCtxRef.current === null) {
         // Context closed — stop interval
-        if (arpeggioTimeoutRef.current !== null) {
-          clearInterval(arpeggioTimeoutRef.current as unknown as ReturnType<typeof setInterval>)
-          arpeggioTimeoutRef.current = null
-        }
+        clearInterval(arpeggioInterval)
+        arpeggioTimeoutRef.current = null
         return
       }
+
+      // Re-read BPM and restart with new interval if tempo has changed
+      const newIntervalMs = 60000 / (TIER_BPM[currentTierRef.current as keyof typeof TIER_BPM] * 4)
+      if (Math.abs(newIntervalMs - currentIntervalMs) > 1) {
+        clearInterval(arpeggioInterval)
+        arpeggioTimeoutRef.current = null
+        scheduleArpeggio()
+        return
+      }
+
       const tickCtx = audioCtxRef.current
       const tickOsc = arpOscRef.current
       if (!tickCtx || !tickOsc) return
@@ -128,10 +142,9 @@ export function useAudio(): AudioControls {
         tickOsc.frequency.setValueAtTime(targetHz, tickCtx.currentTime)
       } catch { /* ignore */ }
       arpStepRef.current = (step + 1) % PENTATONIC_STEPS.length
-    }
+    }, intervalMs)
 
-    // Use setInterval at the initial BPM — interval is fixed per scheduler start
-    arpeggioTimeoutRef.current = setInterval(tick, intervalMs) as unknown as ReturnType<typeof setTimeout>
+    arpeggioTimeoutRef.current = arpeggioInterval as unknown as ReturnType<typeof setTimeout>
   }, [])
 
   // drum tick — fires once per quarter note at BPM 140 via setInterval
@@ -206,6 +219,7 @@ export function useAudio(): AudioControls {
       } catch { /* ignore */ }
       currentTierRef.current = 1
       arpStepRef.current = 0
+      leadActiveRef.current = false
       return
     }
 
@@ -217,6 +231,7 @@ export function useAudio(): AudioControls {
       currentRootHzRef.current = rootFreq
       currentTierRef.current = 1
       arpStepRef.current = 0
+      leadActiveRef.current = false
 
       // ── Master bus ───────────────────────────────────────────────────────
       const masterGain = ctx.createGain()
@@ -436,6 +451,8 @@ export function useAudio(): AudioControls {
       if (leadGain) {
         const leadTarget = tier === 3 ? 0.08 : tier === 4 ? 0.10 : 0.0
         leadGain.gain.linearRampToValueAtTime(leadTarget, rampEnd)
+        // Track lead active state via ref to avoid reading AudioParam.value during ramp
+        leadActiveRef.current = tier >= 3
       }
       if (arpGain) {
         const arpTarget = tier === 1 ? 0.0 : tier === 2 ? 0.10 : tier === 3 ? 0.10 : 0.12
@@ -476,11 +493,11 @@ export function useAudio(): AudioControls {
   const triggerObstacle = useCallback((type: string) => {
     const ctx = audioCtxRef.current
     const leadOsc = leadOscRef.current
-    const leadGain = leadGainRef.current
-    if (!ctx || !leadOsc || !leadGain) return
+    if (!ctx || !leadOsc) return
 
-    // Skip if lead is silent (tiers 1–2 where lead hasn't been activated yet)
-    if (leadGain.gain.value === 0) return
+    // Skip if lead voice is not active (tiers 1–2); use ref to avoid reading
+    // AudioParam.value during a gain ramp which can return stale values
+    if (!leadActiveRef.current) return
 
     try {
       const semitones = CHORD_DEGREES[type] ?? 0
