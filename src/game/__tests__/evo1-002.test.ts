@@ -385,15 +385,15 @@ describe('triggerObstacle — lead oscillator bend', () => {
     act(() => { result.current.setTier(3) })
     act(() => { result.current.triggerObstacle('spike') })
 
-    // 'spike' → semitone 1. Root is 80 (tier 1). Lead base = 80*2 = 160.
-    // targetHz = 160 * 2^(1/12)
+    // 'spike' → semitone 1. Root is 160 (tier 3). Lead base = 160*2 = 320.
+    // setTier(3) writes calls[0] = 320 (base); triggerObstacle writes calls[1] = 320 * 2^(1/12)
     const leadOsc = registry.oscillators[2]
     const calls = leadOsc.frequency.setTargetAtTime.mock.calls
-    // Should have been called at least once (snap to target)
-    expect(calls.length).toBeGreaterThanOrEqual(1)
-    const expectedTargetHz = 160 * Math.pow(2, 1 / 12)
-    // First call: snap to target
-    expect(calls[0][0]).toBeCloseTo(expectedTargetHz, 3)
+    // Should have been called at least twice (setTier + triggerObstacle)
+    expect(calls.length).toBeGreaterThanOrEqual(2)
+    const expectedTargetHz = 320 * Math.pow(2, 1 / 12)
+    // calls[1]: triggerObstacle snap to chord target
+    expect(calls[1][0]).toBeCloseTo(expectedTargetHz, 3)
   })
 
   it('uses CHORD_DEGREES[speed_pad] = 11 for SPEED_PAD type', () => {
@@ -406,10 +406,11 @@ describe('triggerObstacle — lead oscillator bend', () => {
 
     const leadOsc = registry.oscillators[2]
     const calls = leadOsc.frequency.setTargetAtTime.mock.calls
-    expect(calls.length).toBeGreaterThanOrEqual(1)
-    // semitone 11, lead base 160Hz
-    const expectedHz = 160 * Math.pow(2, 11 / 12)
-    expect(calls[0][0]).toBeCloseTo(expectedHz, 3)
+    // calls[0] from setTier(3), calls[1] from triggerObstacle
+    expect(calls.length).toBeGreaterThanOrEqual(2)
+    // semitone 11, root=160 at tier 3, lead base = 320Hz
+    const expectedHz = 320 * Math.pow(2, 11 / 12)
+    expect(calls[1][0]).toBeCloseTo(expectedHz, 3)
   })
 
   it('falls back to semitone 0 (no bend) for unknown obstacle types', () => {
@@ -423,8 +424,8 @@ describe('triggerObstacle — lead oscillator bend', () => {
     const leadOsc = registry.oscillators[2]
     const calls = leadOsc.frequency.setTargetAtTime.mock.calls
     expect(calls.length).toBeGreaterThanOrEqual(1)
-    // semitone 0 → 2^(0/12) = 1.0, so targetHz = leadBase = 160
-    expect(calls[0][0]).toBeCloseTo(160, 3)
+    // semitone 0 → 2^(0/12) = 1.0, so targetHz = leadBase = 320 (tier 3 root=160, lead=root*2)
+    expect(calls[0][0]).toBeCloseTo(320, 3)
   })
 
   it('schedules a return to base frequency 200ms after the trigger', () => {
@@ -437,10 +438,10 @@ describe('triggerObstacle — lead oscillator bend', () => {
 
     const leadOsc = registry.oscillators[2]
     const calls = leadOsc.frequency.setTargetAtTime.mock.calls
-    // Should have 2 calls: [0] snap to target, [1] return to base at now+0.2
-    expect(calls.length).toBeGreaterThanOrEqual(2)
-    // Second call: return to lead base (160 Hz), scheduled at ctx.currentTime + 0.2
-    expect(calls[1][0]).toBeCloseTo(160, 3)
-    expect(calls[1][1]).toBeCloseTo(0.2, 3) // now + 0.2 (currentTime = 0 in mock)
+    // calls[0]=setTier(3) base, calls[1]=triggerObstacle chord target, calls[2]=return to base
+    expect(calls.length).toBeGreaterThanOrEqual(3)
+    // calls[2]: return to lead base (320 Hz at tier 3), scheduled at ctx.currentTime + 0.2
+    expect(calls[2][0]).toBeCloseTo(320, 3)
+    expect(calls[2][1]).toBeCloseTo(0.2, 3) // now + 0.2 (currentTime = 0 in mock)
   })
 })
