@@ -152,7 +152,8 @@ export function resetTileEngine(
   const tiles = tilesRef.current
   for (let i = 0; i < TILE_COUNT; i++) {
     const z = -i * TILE_DEPTH
-    tiles[i] = makeTile(tiles[i].id, z, i, tiles[i].meshRef)
+    // Assign a fresh ID so the Track component's id-change guard fires on restart
+    tiles[i] = makeTile(nextTileId++, z, i, tiles[i].meshRef)
   }
 }
 

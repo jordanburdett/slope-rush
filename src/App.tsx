@@ -363,7 +363,12 @@ function Ball({ xRef, yRef, zRef, tierColorRef, phaseRef, fragmentsRef, ballMesh
         // Spawn fragments
         const group = fragmentGroupRef.current
         if (group) {
-          // Clear old fragments
+          // Dispose GPU resources for old fragments before clearing
+          for (const f of fragmentsRef.current) {
+            f.mesh.geometry.dispose()
+            ;(f.mesh.material as THREE.Material).dispose()
+          }
+          // Clear old fragments from scene
           while (group.children.length > 0) {
             group.remove(group.children[0])
           }
@@ -1153,6 +1158,8 @@ export default function App() {
   // Mobile touch controls
   useEffect(() => {
     const onTouchStart = (e: TouchEvent) => {
+      // Don't queue steering input unless actively playing
+      if (gameState.phaseRef.current !== GamePhase.PLAYING) return
       for (let i = 0; i < e.changedTouches.length; i++) {
         const touch = e.changedTouches[i]
         const halfW = window.innerWidth / 2
@@ -1185,7 +1192,7 @@ export default function App() {
       document.removeEventListener('touchstart', onTouchStart)
       document.removeEventListener('touchend', onTouchEnd)
     }
-  }, [keysRef])
+  }, [keysRef, gameState])
 
   return (
     <div

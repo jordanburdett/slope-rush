@@ -55,12 +55,20 @@ export function useAudio(): AudioControls {
   const stopAudio = useCallback(() => {
     const ctx = audioCtxRef.current
     const gain = humGainRef.current
+    const osc = humOscRef.current
     if (!ctx || !gain) return
 
-    // Fade out over 200ms then suspend
+    // Fade out over 200ms then tear down — capture ctx at call time to avoid
+    // a stale timeout silencing a freshly-created AudioContext on restart
     gain.gain.setTargetAtTime(0, ctx.currentTime, 0.06)
     setTimeout(() => {
-      try { ctx.suspend() } catch { /* ignore */ }
+      // Only act if this is still the same context (not a restarted one)
+      if (audioCtxRef.current !== ctx) return
+      try { osc?.stop() } catch { /* oscillator may already be stopped */ }
+      try { ctx.close() } catch { /* ignore */ }
+      audioCtxRef.current = null
+      humOscRef.current = null
+      humGainRef.current = null
     }, 300)
   }, [])
 
