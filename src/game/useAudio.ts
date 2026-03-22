@@ -1,4 +1,4 @@
-import { useRef, useCallback } from 'react'
+import { useRef, useCallback, useEffect } from 'react'
 import type { SpeedTier } from './constants'
 
 // Root frequency per tier — all 4 voices derive from this root
@@ -138,19 +138,19 @@ export function useAudio(): AudioControls {
     const masterGain = masterGainRef.current
     if (!ctx || !masterGain) return
 
-    // Ramp master gain to 0 over 0.5s then tear down — capture ctx at call
-    // time to avoid a stale timeout silencing a freshly-created AudioContext
-    // on restart (the restart race guard)
+    // Null synchronously so startAudio() can proceed immediately on restart
+    // without hitting the `if (audioCtxRef.current) return` guard.
+    // The captured `ctx` local is used inside the closure for teardown.
+    audioCtxRef.current = null
+
     masterGain.gain.setTargetAtTime(0, ctx.currentTime, 0.15)
     setTimeout(() => {
-      // Only act if this is still the same context (not a restarted one)
-      if (audioCtxRef.current !== ctx) return
+      if (!ctx) return
       try { bassOscRef.current?.stop() } catch { /* already stopped */ }
       try { padOscRef.current?.stop() } catch { /* already stopped */ }
       try { leadOscRef.current?.stop() } catch { /* already stopped */ }
       try { arpOscRef.current?.stop() } catch { /* already stopped */ }
       try { ctx.close() } catch { /* ignore */ }
-      audioCtxRef.current = null
       bassOscRef.current = null
       padOscRef.current = null
       leadOscRef.current = null
@@ -187,6 +187,7 @@ export function useAudio(): AudioControls {
       source.connect(gain)
       gain.connect(ctx.destination)
       source.start()
+      source.stop(ctx.currentTime + 0.31)
     } catch { /* ignore */ }
   }, [])
 
@@ -250,6 +251,11 @@ export function useAudio(): AudioControls {
       filter.frequency.value = hz
     } catch { /* ignore */ }
   }, [])
+
+  // Tear down AudioContext when the component unmounts
+  useEffect(() => {
+    return () => stopAudio()
+  }, [stopAudio])
 
   return { startAudio, stopAudio, triggerDeath, triggerTierUp, setTier, setFilterCutoff }
 }
