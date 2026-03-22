@@ -50,6 +50,17 @@ export function getTierColor(tier: SpeedTier): string {
   return TIER_COLORS[tier]
 }
 
+export const TIER_LABELS: Record<SpeedTier, string> = {
+  1: 'NOVICE',
+  2: 'RECKLESS',
+  3: 'INSANE',
+  4: 'GODSPEED',
+}
+
+export function getTierLabel(tier: SpeedTier): string {
+  return TIER_LABELS[tier]
+}
+
 // Starfield
 export const STAR_COUNT = 800
 export const STAR_SIZE = 0.15
@@ -64,6 +75,7 @@ export const BALL_Y = TILE_HEIGHT / 2 + BALL_RADIUS
 
 // Game phases
 export const GamePhase = {
+  IDLE: 'idle',
   PLAYING: 'playing',
   DEAD: 'dead',
 } as const

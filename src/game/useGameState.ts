@@ -24,7 +24,7 @@ export function useGameState(): GameStateRefs {
   const speedRef = useRef<number>(INITIAL_SPEED)
   const distanceRef = useRef<number>(0)
   const tierRef = useRef<SpeedTier>(getSpeedTier(INITIAL_SPEED))
-  const phaseRef = useRef<GamePhase>(GamePhaseConst.PLAYING)
+  const phaseRef = useRef<GamePhase>(GamePhaseConst.IDLE)
   const lastSpeedUpDistRef = useRef<number>(0)
 
   const resetState = useCallback((speed: number) => {

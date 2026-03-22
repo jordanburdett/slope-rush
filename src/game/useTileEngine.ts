@@ -1,4 +1,5 @@
 import { useRef } from 'react'
+import * as THREE from 'three'
 import {
   TILE_COUNT,
   TILE_DEPTH,
@@ -23,6 +24,8 @@ export interface TileData {
   obstacleBoxes: ObstacleBox[]
   /** Spike gap offset: the center x of the 2-unit clear gap (for spike type) */
   spikeGapX: number
+  /** Ref to the floor mesh so we can animate opacity on recycle */
+  meshRef: React.MutableRefObject<THREE.Mesh | null>
 }
 
 // Counter for globally unique tile IDs across recycles
@@ -69,12 +72,13 @@ function buildObstacleBoxes(
   return boxes
 }
 
-function makeTile(id: number, z: number, genIndex: number): TileData {
+function makeTile(id: number, z: number, genIndex: number, existingMeshRef?: React.MutableRefObject<THREE.Mesh | null>): TileData {
   const obstacleType = pickObstacleType(genIndex)
   // Random gap center for spike: range [-1, +1] so gap stays on track
   const spikeGapX = (Math.random() - 0.5) * 2 // -1 to +1
   const obstacleBoxes = buildObstacleBoxes(obstacleType, spikeGapX)
-  return { id, z, obstacleType, obstacleBoxes, spikeGapX }
+  const meshRef = existingMeshRef ?? { current: null }
+  return { id, z, obstacleType, obstacleBoxes, spikeGapX, meshRef }
 }
 
 export interface TileEngineRefs {
@@ -85,10 +89,15 @@ export interface TileEngineRefs {
 export function useTileEngine(): TileEngineRefs {
   const tileGenIndexRef = useRef<number>(TILE_COUNT)
 
+  // Persistent mesh refs — one per tile slot, never recreated
+  const meshRefsPool = useRef<Array<React.MutableRefObject<THREE.Mesh | null>>>(
+    Array.from({ length: TILE_COUNT }, () => ({ current: null })),
+  )
+
   const tilesRef = useRef<TileData[]>(
     Array.from({ length: TILE_COUNT }, (_, i) => {
       const z = -i * TILE_DEPTH
-      return makeTile(i, z, i)
+      return makeTile(i, z, i, meshRefsPool.current[i])
     }),
   )
 
@@ -119,7 +128,13 @@ export function tickTileEngine(
       const newZ = minZ - TILE_DEPTH
       const genIndex = tileGenIndexRef.current++
       const newId = nextTileId++
-      const newTile = makeTile(newId, newZ, genIndex)
+      // Re-use the existing meshRef for this slot so the R3F ref still points to the same mesh
+      const newTile = makeTile(newId, newZ, genIndex, tile.meshRef)
+      // Trigger fade-in: the Track component will lerp opacity back to 1
+      if (tile.meshRef.current) {
+        const mat = tile.meshRef.current.material as THREE.MeshStandardMaterial
+        if (mat) mat.opacity = 0.5
+      }
       tiles[i] = newTile
     }
   }
@@ -137,7 +152,7 @@ export function resetTileEngine(
   const tiles = tilesRef.current
   for (let i = 0; i < TILE_COUNT; i++) {
     const z = -i * TILE_DEPTH
-    tiles[i] = makeTile(tiles[i].id, z, i)
+    tiles[i] = makeTile(tiles[i].id, z, i, tiles[i].meshRef)
   }
 }
 

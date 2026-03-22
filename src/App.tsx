@@ -21,6 +21,7 @@ import {
   TILE_SURFACE_COLOR,
   BG_COLOR,
   getTierColor,
+  getTierLabel,
   getSpeedTier,
   INITIAL_SPEED,
   NARROWING_HALF,
@@ -41,6 +42,7 @@ import { useGameState, tickGameState } from './game/useGameState'
 import { useBallPhysics, tickBallPhysics } from './game/useBallPhysics'
 import { useTileEngine, tickTileEngine, resetTileEngine, isBallOverGap } from './game/useTileEngine'
 import type { TileData } from './game/useTileEngine'
+import { useAudio } from './game/useAudio'
 
 // ---------------------------------------------------------------------------
 // Starfield
@@ -108,7 +110,7 @@ function Track({ tilesRef, tierColorRef }: TrackProps) {
   // Keep tier color update separate from position update
   const lastTierColorRef = useRef<string>(tierColorRef.current)
 
-  useFrame(() => {
+  useFrame((_state, delta) => {
     const tiles = tilesRef.current
 
     // Update positions every frame
@@ -155,6 +157,15 @@ function Track({ tilesRef, tierColorRef }: TrackProps) {
           }
         }
       }
+
+      // Tile fade-in: lerp opacity toward 1
+      const floorMesh = floorMeshRefs.current[i]
+      if (floorMesh) {
+        const mat = floorMesh.material as THREE.MeshStandardMaterial
+        if (mat && mat.opacity < 1) {
+          mat.opacity = Math.min(1, mat.opacity + delta * 3)
+        }
+      }
     }
 
     // Update emissive only on tier change
@@ -192,7 +203,11 @@ function Track({ tilesRef, tierColorRef }: TrackProps) {
           >
             {/* Surface — hidden for gap tiles */}
             <mesh
-              ref={(el) => { floorMeshRefs.current[i] = el }}
+              ref={(el) => {
+                floorMeshRefs.current[i] = el
+                // Keep TileData meshRef in sync with what R3F assigns
+                tile.meshRef.current = el
+              }}
               receiveShadow
               visible={!isGap}
             >
@@ -202,6 +217,8 @@ function Track({ tilesRef, tierColorRef }: TrackProps) {
                 color={TILE_SURFACE_COLOR}
                 emissive={tierColorRef.current}
                 emissiveIntensity={0.4}
+                transparent
+                opacity={1}
               />
             </mesh>
             {/* Left edge */}
@@ -301,14 +318,22 @@ interface BallProps {
   tierColorRef: React.MutableRefObject<string>
   phaseRef: React.MutableRefObject<GamePhaseType>
   fragmentsRef: React.MutableRefObject<FragmentData[]>
+  ballMeshRef: React.MutableRefObject<THREE.Mesh | null>
 }
 
-function Ball({ xRef, yRef, zRef, tierColorRef, phaseRef, fragmentsRef }: BallProps) {
+function Ball({ xRef, yRef, zRef, tierColorRef, phaseRef, fragmentsRef, ballMeshRef }: BallProps) {
   const meshRef = useRef<THREE.Mesh>(null)
   const lightRef = useRef<THREE.PointLight>(null)
   const fragmentGroupRef = useRef<THREE.Group>(null)
   const lastTierColorRef = useRef<string>(tierColorRef.current)
   const wasAlive = useRef<boolean>(true)
+
+  // Sync external ref so GameLoop can drive roll rotation
+  useEffect(() => {
+    if (meshRef.current) {
+      ballMeshRef.current = meshRef.current
+    }
+  })
 
   useFrame((_state, delta) => {
     const isDead = phaseRef.current === GamePhase.DEAD
@@ -422,22 +447,37 @@ function Ball({ xRef, yRef, zRef, tierColorRef, phaseRef, fragmentsRef }: BallPr
 }
 
 // ---------------------------------------------------------------------------
-// Camera controller
+// Camera controller with screen shake
 // ---------------------------------------------------------------------------
 interface CameraControllerProps {
   xRef: React.MutableRefObject<number>
   zRef: React.MutableRefObject<number>
+  shakeRef: React.MutableRefObject<{ active: boolean; elapsed: number }>
 }
 
-function CameraController({ xRef, zRef }: CameraControllerProps) {
+function CameraController({ xRef, zRef, shakeRef }: CameraControllerProps) {
   const { camera } = useThree()
 
-  useFrame(() => {
+  useFrame((_state, delta) => {
     const targetX = xRef.current * CAM_X_FACTOR
     camera.position.x += (targetX - camera.position.x) * CAM_X_LERP
     camera.position.y = CAM_Y
     camera.position.z = zRef.current + CAM_Z_OFFSET
     camera.lookAt(xRef.current * 0.2, 0, zRef.current - 10)
+
+    // Screen shake
+    const shake = shakeRef.current
+    if (shake.active) {
+      const clampedDelta = Math.min(delta, 0.05)
+      shake.elapsed += clampedDelta
+      if (shake.elapsed >= 0.3) {
+        shake.active = false
+      } else {
+        const mag = 0.3 * (1 - shake.elapsed / 0.3)
+        camera.position.x += Math.sin(shake.elapsed * 80) * mag
+        camera.position.y += Math.cos(shake.elapsed * 60) * mag * 0.5
+      }
+    }
   })
 
   return null
@@ -454,6 +494,9 @@ interface GameLoopProps {
   tileGenIndexRef: React.MutableRefObject<number>
   tierColorRef: React.MutableRefObject<string>
   onDeath: () => void
+  ballMeshRef: React.MutableRefObject<THREE.Mesh | null>
+  audioSetTier: (tier: SpeedTier) => void
+  audioTriggerTierUp: () => void
 }
 
 function GameLoop({
@@ -464,6 +507,9 @@ function GameLoop({
   tileGenIndexRef,
   tierColorRef,
   onDeath,
+  ballMeshRef,
+  audioSetTier,
+  audioTriggerTierUp,
 }: GameLoopProps) {
   useFrame((_state, delta) => {
     // Only run physics when alive
@@ -475,6 +521,8 @@ function GameLoop({
     const tierChanged = tickGameState(gameState, clampedDelta)
     if (tierChanged) {
       tierColorRef.current = getTierColor(gameState.tierRef.current)
+      audioSetTier(gameState.tierRef.current)
+      audioTriggerTierUp()
     }
 
     // 2. Check if over gap for gravity
@@ -486,7 +534,12 @@ function GameLoop({
     // 4. Recycle tiles
     tickTileEngine(tilesRef, tileGenIndexRef, ball.zRef.current)
 
-    // 5. Death detection
+    // 5. Ball roll animation
+    if (ballMeshRef.current) {
+      ballMeshRef.current.rotation.x += gameState.speedRef.current * clampedDelta * 0.3
+    }
+
+    // 6. Death detection
     const bx = ball.xRef.current
     const by = ball.yRef.current
     const bz = ball.zRef.current
@@ -536,81 +589,236 @@ function GameLoop({
 }
 
 // ---------------------------------------------------------------------------
-// HUD overlay
+// HUD overlay (in-game only)
 // ---------------------------------------------------------------------------
 interface HUDProps {
-  speedRef: React.MutableRefObject<number>
   distanceRef: React.MutableRefObject<number>
   tierRef: React.MutableRefObject<SpeedTier>
   bestRef: React.MutableRefObject<number>
   phaseRef: React.MutableRefObject<GamePhaseType>
 }
 
-function HUD({ speedRef, distanceRef, tierRef, bestRef, phaseRef }: HUDProps) {
-  const hudRef = useRef<HTMLDivElement>(null)
-  const speedElRef = useRef<HTMLSpanElement>(null)
+function HUD({ distanceRef, tierRef, bestRef, phaseRef }: HUDProps) {
   const distElRef = useRef<HTMLSpanElement>(null)
   const bestElRef = useRef<HTMLSpanElement>(null)
-  const scoreElRef = useRef<HTMLSpanElement>(null)
+  const tierDotRef = useRef<HTMLSpanElement>(null)
+  const tierLabelRef = useRef<HTMLSpanElement>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     let rafId: number
     const update = () => {
-      if (phaseRef.current !== GamePhase.DEAD) {
-        if (speedElRef.current) {
-          speedElRef.current.textContent = Math.round(speedRef.current).toString()
-        }
+      const phase = phaseRef.current
+      if (phase === GamePhase.PLAYING) {
         if (distElRef.current) {
-          distElRef.current.textContent = Math.round(distanceRef.current) + 'm'
+          distElRef.current.textContent = Math.floor(distanceRef.current) + 'm'
         }
-        if (scoreElRef.current) {
-          scoreElRef.current.textContent = Math.floor(distanceRef.current).toString()
+        if (bestElRef.current) {
+          bestElRef.current.textContent = 'BEST ' + bestRef.current + 'm'
         }
-      }
-      if (bestElRef.current) {
-        bestElRef.current.textContent = bestRef.current.toString()
-      }
-      if (hudRef.current) {
         const color = getTierColor(tierRef.current)
-        hudRef.current.style.setProperty('--tier-color', color)
+        const label = getTierLabel(tierRef.current)
+        if (tierDotRef.current) {
+          tierDotRef.current.style.background = color
+          tierDotRef.current.style.boxShadow = `0 0 8px ${color}`
+        }
+        if (tierLabelRef.current) {
+          tierLabelRef.current.textContent = label
+          tierLabelRef.current.style.color = color
+        }
+      }
+      if (containerRef.current) {
+        containerRef.current.style.display = phase === GamePhase.PLAYING ? 'block' : 'none'
       }
       rafId = requestAnimationFrame(update)
     }
     rafId = requestAnimationFrame(update)
     return () => cancelAnimationFrame(rafId)
-  }, [speedRef, distanceRef, tierRef, bestRef, phaseRef])
+  }, [distanceRef, tierRef, bestRef, phaseRef])
 
   return (
-    <div ref={hudRef} style={{
+    <div ref={containerRef} style={{
       position: 'absolute',
       top: 0,
       left: 0,
       width: '100%',
-      padding: '12px 16px',
-      boxSizing: 'border-box',
-      display: 'flex',
-      justifyContent: 'space-between',
-      alignItems: 'flex-start',
-      fontFamily: 'monospace',
-      fontSize: '14px',
-      color: '#ffffff',
+      height: '100%',
       pointerEvents: 'none',
       zIndex: 10,
-      textShadow: '0 0 8px var(--tier-color, #7c3aed)',
+      fontFamily: 'monospace',
     }}>
-      <span>SPD <span ref={speedElRef}>12</span></span>
-      {/* Center score */}
-      <span style={{
+      {/* Distance — top center */}
+      <div style={{
         position: 'absolute',
+        top: '16px',
         left: '50%',
         transform: 'translateX(-50%)',
-        fontSize: '18px',
+        fontSize: '22px',
         fontWeight: 'bold',
+        color: '#ffffff',
+        textShadow: '0 0 10px rgba(255,255,255,0.6)',
+        letterSpacing: '0.05em',
       }}>
-        <span ref={scoreElRef}>0</span><span style={{ fontSize: '12px', marginLeft: '2px' }}>m</span>
-      </span>
-      <span>DIST <span ref={distElRef}>0m</span></span>
+        <span ref={distElRef}>0m</span>
+      </div>
+
+      {/* Personal best — top right */}
+      <div style={{
+        position: 'absolute',
+        top: '16px',
+        right: '16px',
+        fontSize: '13px',
+        color: '#888888',
+        letterSpacing: '0.05em',
+      }}>
+        <span ref={bestElRef}>BEST 0m</span>
+      </div>
+
+      {/* Speed tier — bottom center */}
+      <div style={{
+        position: 'absolute',
+        bottom: '20px',
+        left: '50%',
+        transform: 'translateX(-50%)',
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        fontSize: '13px',
+        letterSpacing: '0.1em',
+      }}>
+        <span
+          ref={tierDotRef}
+          style={{
+            display: 'inline-block',
+            width: '10px',
+            height: '10px',
+            borderRadius: '50%',
+            background: '#7c3aed',
+            boxShadow: '0 0 8px #7c3aed',
+          }}
+        />
+        <span ref={tierLabelRef} style={{ color: '#7c3aed' }}>NOVICE</span>
+      </div>
     </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Start screen overlay
+// ---------------------------------------------------------------------------
+interface StartScreenProps {
+  onStart: () => void
+}
+
+function StartScreen({ onStart }: StartScreenProps) {
+  return (
+    <div
+      role="dialog"
+      aria-label="Slope Rush start screen"
+      style={{
+        position: 'absolute',
+        top: 0,
+        left: 0,
+        width: '100%',
+        height: '100%',
+        background: '#0a0010',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontFamily: 'monospace',
+        zIndex: 30,
+        userSelect: 'none',
+        cursor: 'pointer',
+      }}
+      onClick={onStart}
+    >
+      {/* Title */}
+      <div style={{
+        fontSize: 'clamp(40px, 8vw, 72px)',
+        fontWeight: 'bold',
+        letterSpacing: '0.08em',
+        background: 'linear-gradient(135deg, #7c3aed 0%, #06b6d4 40%, #ec4899 80%, #ffffff 100%)',
+        WebkitBackgroundClip: 'text',
+        WebkitTextFillColor: 'transparent',
+        backgroundClip: 'text',
+        marginBottom: '4px',
+        textShadow: 'none',
+      }}>
+        SLOPE RUSH
+      </div>
+
+      {/* Subtitle tier */}
+      <div style={{
+        fontSize: '14px',
+        letterSpacing: '0.3em',
+        color: '#7c3aed',
+        textTransform: 'uppercase',
+        marginBottom: '32px',
+      }}>
+        NOVICE → GODSPEED
+      </div>
+
+      {/* Preview ball canvas */}
+      <div style={{ marginBottom: '36px', borderRadius: '8px', overflow: 'hidden', background: 'transparent' }}>
+        <Canvas
+          style={{ width: 100, height: 100, display: 'block' }}
+          camera={{ position: [0, 0, 3], fov: 40 }}
+          gl={{ alpha: true, antialias: true }}
+        >
+          <ambientLight intensity={0.5} />
+          <directionalLight position={[3, 3, 3]} intensity={1.2} />
+          <pointLight position={[-2, 2, 2]} color="#7c3aed" intensity={3} />
+          <PreviewBall />
+        </Canvas>
+      </div>
+
+      {/* CTA */}
+      <div style={{
+        fontSize: '15px',
+        letterSpacing: '0.2em',
+        color: '#ffffff',
+        opacity: 0.8,
+        animation: 'pulse 2s ease-in-out infinite',
+      }}>
+        PRESS SPACE / TAP TO PLAY
+      </div>
+
+      <style>{`
+        @keyframes pulse {
+          0%, 100% { opacity: 0.8; }
+          50% { opacity: 0.3; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          @keyframes pulse { 0%, 100% { opacity: 0.8; } }
+        }
+      `}</style>
+    </div>
+  )
+}
+
+// Preview ball for start screen — auto-rotating metallic sphere
+function PreviewBall() {
+  const meshRef = useRef<THREE.Mesh>(null)
+
+  useFrame((_state, delta) => {
+    if (meshRef.current) {
+      meshRef.current.rotation.y += delta * 0.8
+      meshRef.current.rotation.x += delta * 0.3
+    }
+  })
+
+  return (
+    <mesh ref={meshRef}>
+      <sphereGeometry args={[0.7, 32, 32]} />
+      <meshStandardMaterial
+        color="#ccccdd"
+        metalness={0.85}
+        roughness={0.15}
+        emissive="#7c3aed"
+        emissiveIntensity={0.4}
+      />
+    </mesh>
   )
 }
 
@@ -620,18 +828,19 @@ function HUD({ speedRef, distanceRef, tierRef, bestRef, phaseRef }: HUDProps) {
 interface DeadOverlayProps {
   score: number
   best: number
+  isNewBest: boolean
+  tierColor: string
   onRestart: () => void
   visible: boolean
 }
 
-function DeadOverlay({ score, best, onRestart, visible }: DeadOverlayProps) {
+function DeadOverlay({ score, best, isNewBest, tierColor, onRestart, visible }: DeadOverlayProps) {
   if (!visible) return null
 
   return (
     <div
       role="dialog"
       aria-label="Game over"
-      onClick={onRestart}
       style={{
         position: 'absolute',
         top: 0,
@@ -642,26 +851,103 @@ function DeadOverlay({ score, best, onRestart, visible }: DeadOverlayProps) {
         flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'center',
-        background: 'rgba(0,0,0,0.7)',
+        background: 'rgba(10,0,16,0.85)',
         color: '#ffffff',
         fontFamily: 'monospace',
         zIndex: 20,
-        cursor: 'pointer',
         userSelect: 'none',
       }}
     >
-      <div style={{ fontSize: '40px', fontWeight: 'bold', marginBottom: '12px', color: '#ec4899', textShadow: '0 0 20px #ec4899' }}>
-        DEAD
+      {/* GAME OVER heading */}
+      <div style={{
+        fontSize: 'clamp(36px, 7vw, 56px)',
+        fontWeight: 'bold',
+        letterSpacing: '0.1em',
+        color: '#ec4899',
+        textShadow: '0 0 20px #ec4899, 0 0 40px #ec4899',
+        marginBottom: '20px',
+        animation: 'flicker 0.5s ease-in',
+      }}>
+        GAME OVER
       </div>
-      <div style={{ fontSize: '20px', marginBottom: '8px' }}>
-        Score: <strong>{score}m</strong>
+
+      {/* Distance achieved */}
+      <div style={{
+        fontSize: '28px',
+        fontWeight: 'bold',
+        marginBottom: '8px',
+        color: '#ffffff',
+      }}>
+        {score}m
       </div>
-      <div style={{ fontSize: '16px', marginBottom: '32px', color: '#06b6d4' }}>
-        Best: <strong>{best}m</strong>
-      </div>
-      <div style={{ fontSize: '14px', opacity: 0.7 }}>
-        Press <strong>R</strong> or tap to restart
-      </div>
+
+      {/* New best badge */}
+      {isNewBest && (
+        <div style={{
+          fontSize: '14px',
+          letterSpacing: '0.2em',
+          color: '#fbbf24',
+          textShadow: '0 0 12px #fbbf24',
+          marginBottom: '8px',
+          animation: 'newBest 0.4s ease-out',
+          fontWeight: 'bold',
+        }}>
+          NEW BEST!
+        </div>
+      )}
+
+      {/* Previous best */}
+      {!isNewBest && (
+        <div style={{
+          fontSize: '14px',
+          color: '#888',
+          marginBottom: '8px',
+        }}>
+          BEST {best}m
+        </div>
+      )}
+
+      {/* Spacing */}
+      <div style={{ marginBottom: '32px' }} />
+
+      {/* Play again button */}
+      <button
+        onClick={onRestart}
+        style={{
+          padding: '14px 36px',
+          fontSize: '15px',
+          fontFamily: 'monospace',
+          fontWeight: 'bold',
+          letterSpacing: '0.15em',
+          color: '#ffffff',
+          background: 'transparent',
+          border: `2px solid ${tierColor}`,
+          borderRadius: '4px',
+          cursor: 'pointer',
+          boxShadow: `0 0 16px ${tierColor}`,
+          textShadow: `0 0 8px ${tierColor}`,
+          transition: 'none',
+        }}
+      >
+        PLAY AGAIN
+      </button>
+
+      <style>{`
+        @keyframes flicker {
+          0% { opacity: 0; transform: scale(1.1); }
+          40% { opacity: 1; }
+          60% { opacity: 0.8; }
+          100% { opacity: 1; transform: scale(1); }
+        }
+        @keyframes newBest {
+          0% { opacity: 0; transform: translateY(-10px) scale(0.8); }
+          100% { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          @keyframes flicker { 0%, 100% { opacity: 1; } }
+          @keyframes newBest { 0%, 100% { opacity: 1; } }
+        }
+      `}</style>
     </div>
   )
 }
@@ -678,6 +964,10 @@ interface SceneProps {
   tierColorRef: React.MutableRefObject<string>
   onDeath: () => void
   fragmentsRef: React.MutableRefObject<FragmentData[]>
+  shakeRef: React.MutableRefObject<{ active: boolean; elapsed: number }>
+  ballMeshRef: React.MutableRefObject<THREE.Mesh | null>
+  audioSetTier: (tier: SpeedTier) => void
+  audioTriggerTierUp: () => void
 }
 
 function Scene({
@@ -689,6 +979,10 @@ function Scene({
   tierColorRef,
   onDeath,
   fragmentsRef,
+  shakeRef,
+  ballMeshRef,
+  audioSetTier,
+  audioTriggerTierUp,
 }: SceneProps) {
   return (
     <>
@@ -707,8 +1001,9 @@ function Scene({
         tierColorRef={tierColorRef}
         phaseRef={gameState.phaseRef}
         fragmentsRef={fragmentsRef}
+        ballMeshRef={ballMeshRef}
       />
-      <CameraController xRef={ball.xRef} zRef={ball.zRef} />
+      <CameraController xRef={ball.xRef} zRef={ball.zRef} shakeRef={shakeRef} />
       <GameLoop
         gameState={gameState}
         ball={ball}
@@ -717,6 +1012,9 @@ function Scene({
         tileGenIndexRef={tileGenIndexRef}
         tierColorRef={tierColorRef}
         onDeath={onDeath}
+        ballMeshRef={ballMeshRef}
+        audioSetTier={audioSetTier}
+        audioTriggerTierUp={audioTriggerTierUp}
       />
     </>
   )
@@ -731,12 +1029,18 @@ export default function App() {
   const { tilesRef, tileGenIndexRef } = useTileEngine()
   const tierColorRef = useRef<string>(getTierColor(gameState.tierRef.current))
   const fragmentsRef = useRef<FragmentData[]>([])
+  const shakeRef = useRef<{ active: boolean; elapsed: number }>({ active: false, elapsed: 0 })
+  const ballMeshRef = useRef<THREE.Mesh | null>(null)
 
-  // Phase drives the dead overlay visibility (React state so it re-renders)
-  const [phase, setUiPhase] = useState<GamePhaseType>(GamePhase.PLAYING)
+  const audio = useAudio()
+
+  // Phase drives overlay visibility (React state so it re-renders)
+  const [phase, setUiPhase] = useState<GamePhaseType>(GamePhase.IDLE)
   // Snapshot score/best at death time so overlay renders without ref access
   const [deadScore, setDeadScore] = useState<number>(0)
   const [deadBest, setDeadBest] = useState<number>(0)
+  const [isNewBest, setIsNewBest] = useState<boolean>(false)
+  const [deadTierColor, setDeadTierColor] = useState<string>('#ec4899')
 
   // Personal best — read from localStorage on mount
   const bestRef = useRef<number>(0)
@@ -748,12 +1052,28 @@ export default function App() {
     }
   }, [])
 
+  const startGame = useCallback(() => {
+    if (gameState.phaseRef.current !== GamePhase.IDLE) return
+
+    // AudioContext MUST be created inside user-gesture handler
+    audio.startAudio()
+
+    gameState.setPhase(GamePhase.PLAYING)
+    setUiPhase(GamePhase.PLAYING)
+  }, [gameState, audio])
+
   const handleDeath = useCallback(() => {
     gameState.setPhase(GamePhase.DEAD)
+    audio.stopAudio()
+    audio.triggerDeath()
+
+    // Trigger screen shake
+    shakeRef.current = { active: true, elapsed: 0 }
 
     // Update personal best
     const score = Math.floor(gameState.distanceRef.current)
-    if (score > bestRef.current) {
+    const newBest = score > bestRef.current
+    if (newBest) {
       bestRef.current = score
       localStorage.setItem(BEST_KEY, score.toString())
     }
@@ -761,8 +1081,10 @@ export default function App() {
     // Snapshot values for overlay render
     setDeadScore(score)
     setDeadBest(bestRef.current)
+    setIsNewBest(newBest)
+    setDeadTierColor(getTierColor(gameState.tierRef.current))
     setUiPhase(GamePhase.DEAD)
-  }, [gameState])
+  }, [gameState, audio])
 
   const handleRestart = useCallback(() => {
     // Reset ball via encapsulated function
@@ -780,12 +1102,19 @@ export default function App() {
     // Clear fragments (Ball component watches phaseRef for wasAlive reset)
     fragmentsRef.current = []
 
+    // Reset shake
+    shakeRef.current = { active: false, elapsed: 0 }
+
+    // Restart audio
+    audio.startAudio()
+    audio.setTier(1)
+
     // Resume game
     gameState.setPhase(GamePhase.PLAYING)
     setUiPhase(GamePhase.PLAYING)
-  }, [ball, gameState, tilesRef, tileGenIndexRef, tierColorRef])
+  }, [ball, gameState, tilesRef, tileGenIndexRef, tierColorRef, audio])
 
-  // Keyboard input — including restart on R
+  // Keyboard input — including restart on R and start on Space
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') {
@@ -793,6 +1122,12 @@ export default function App() {
       }
       if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') {
         keysRef.current.right = true
+      }
+      if (e.key === ' ') {
+        if (gameState.phaseRef.current === GamePhase.IDLE) {
+          startGame()
+        }
+        e.preventDefault()
       }
       if ((e.key === 'r' || e.key === 'R') && gameState.phaseRef.current === GamePhase.DEAD) {
         handleRestart()
@@ -813,7 +1148,44 @@ export default function App() {
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('keyup', onKeyUp)
     }
-  }, [keysRef, gameState, handleRestart])
+  }, [keysRef, gameState, handleRestart, startGame])
+
+  // Mobile touch controls
+  useEffect(() => {
+    const onTouchStart = (e: TouchEvent) => {
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        const touch = e.changedTouches[i]
+        const halfW = window.innerWidth / 2
+        if (touch.clientX < halfW) {
+          keysRef.current.left = true
+        } else {
+          keysRef.current.right = true
+        }
+      }
+    }
+
+    const onTouchEnd = (e: TouchEvent) => {
+      // Re-evaluate remaining touches to decide which directions are still active
+      keysRef.current.left = false
+      keysRef.current.right = false
+      for (let i = 0; i < e.touches.length; i++) {
+        const touch = e.touches[i]
+        const halfW = window.innerWidth / 2
+        if (touch.clientX < halfW) {
+          keysRef.current.left = true
+        } else {
+          keysRef.current.right = true
+        }
+      }
+    }
+
+    document.addEventListener('touchstart', onTouchStart, { passive: true })
+    document.addEventListener('touchend', onTouchEnd, { passive: true })
+    return () => {
+      document.removeEventListener('touchstart', onTouchStart)
+      document.removeEventListener('touchend', onTouchEnd)
+    }
+  }, [keysRef])
 
   return (
     <div
@@ -821,13 +1193,20 @@ export default function App() {
       role="application"
       aria-label="Slope Rush game"
     >
+      {/* Start screen */}
+      {phase === GamePhase.IDLE && (
+        <StartScreen onStart={startGame} />
+      )}
+
+      {/* In-game HUD */}
       <HUD
-        speedRef={gameState.speedRef}
         distanceRef={gameState.distanceRef}
         tierRef={gameState.tierRef}
         bestRef={bestRef}
         phaseRef={gameState.phaseRef}
       />
+
+      {/* Main 3D canvas */}
       <Canvas
         camera={{ position: [0, CAM_Y, CAM_Z_OFFSET], fov: 75 }}
         shadows
@@ -842,11 +1221,19 @@ export default function App() {
           tierColorRef={tierColorRef}
           onDeath={handleDeath}
           fragmentsRef={fragmentsRef}
+          shakeRef={shakeRef}
+          ballMeshRef={ballMeshRef}
+          audioSetTier={audio.setTier}
+          audioTriggerTierUp={audio.triggerTierUp}
         />
       </Canvas>
+
+      {/* Game over overlay */}
       <DeadOverlay
         score={deadScore}
         best={deadBest}
+        isNewBest={isNewBest}
+        tierColor={deadTierColor}
         onRestart={handleRestart}
         visible={phase === GamePhase.DEAD}
       />
