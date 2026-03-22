@@ -529,6 +529,7 @@ interface GameLoopProps {
   audioSetTier: (tier: SpeedTier) => void
   audioTriggerTierUp: () => void
   audioTriggerObstacle: (type: string) => void
+  audioSetFilterCutoff: (hz: number) => void
 }
 
 function GameLoop({
@@ -543,6 +544,7 @@ function GameLoop({
   audioSetTier,
   audioTriggerTierUp,
   audioTriggerObstacle,
+  audioSetFilterCutoff,
 }: GameLoopProps) {
   // Track the last tile ID that triggered a narrowing audio event (fire once per tile)
   const lastNarrowingTriggerRef = useRef<number>(-1)
@@ -564,6 +566,11 @@ function GameLoop({
       audioSetTier(gameState.tierRef.current)
       audioTriggerTierUp()
     }
+
+    // 1b. Speed-to-filter-cutoff mapping — called every frame
+    const speed = gameState.speedRef.current
+    const cutoff = 400 + (speed - INITIAL_SPEED) / (MAX_SPEED - INITIAL_SPEED) * (8000 - 400)
+    audioSetFilterCutoff(Math.max(400, Math.min(8000, cutoff)))
 
     // 2. Check if over gap for gravity
     const overGap = isBallOverGap(tilesRef.current, ball.xRef.current, ball.zRef.current)
@@ -1038,6 +1045,7 @@ interface SceneProps {
   audioSetTier: (tier: SpeedTier) => void
   audioTriggerTierUp: () => void
   audioTriggerObstacle: (type: string) => void
+  audioSetFilterCutoff: (hz: number) => void
 }
 
 function Scene({
@@ -1054,6 +1062,7 @@ function Scene({
   audioSetTier,
   audioTriggerTierUp,
   audioTriggerObstacle,
+  audioSetFilterCutoff,
 }: SceneProps) {
   return (
     <>
@@ -1087,6 +1096,7 @@ function Scene({
         audioSetTier={audioSetTier}
         audioTriggerTierUp={audioTriggerTierUp}
         audioTriggerObstacle={audioTriggerObstacle}
+        audioSetFilterCutoff={audioSetFilterCutoff}
       />
     </>
   )
@@ -1300,6 +1310,7 @@ export default function App() {
           audioSetTier={audio.setTier}
           audioTriggerTierUp={audio.triggerTierUp}
           audioTriggerObstacle={audio.triggerObstacle}
+          audioSetFilterCutoff={audio.setFilterCutoff}
         />
       </Canvas>
 
