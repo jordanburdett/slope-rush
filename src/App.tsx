@@ -53,6 +53,100 @@ import type { TileData } from './game/useTileEngine'
 import { useAudio } from './game/useAudio'
 
 // ---------------------------------------------------------------------------
+// BloomState — radial particle burst on PB-beating death
+// ---------------------------------------------------------------------------
+export interface BloomState {
+  active: boolean
+  elapsed: number                       // seconds since bloom started
+  deathPos: THREE.Vector3               // world position of ball at death
+  color: string                         // tier hex color at death
+  // Per-particle: start pos (near deathPos), end pos (final constellation star pos)
+  particles: Array<{
+    startX: number; startY: number; startZ: number
+    endX: number; endY: number; endZ: number
+  }>
+}
+
+// ---------------------------------------------------------------------------
+// BloomParticles — animated particle burst expanding to constellation positions
+// ---------------------------------------------------------------------------
+interface BloomParticlesProps {
+  bloomRef: React.MutableRefObject<BloomState>
+}
+
+function BloomParticles({ bloomRef }: BloomParticlesProps) {
+  const MAX_PARTICLES = 8
+  const matRef = useRef<THREE.PointsMaterial>(null)
+  const pointsRef = useRef<THREE.Points>(null)
+  const wasActiveRef = useRef<boolean>(false)
+
+  // Store mutable geometry data in refs so the linter allows mutation
+  const posBufferRef = useRef<Float32Array>(new Float32Array(MAX_PARTICLES * 3))
+  const geoRef = useRef<THREE.BufferGeometry>(new THREE.BufferGeometry())
+
+  // Wire up geometry attribute after mount
+  useEffect(() => {
+    const geo = geoRef.current
+    const buf = posBufferRef.current
+    geo.setAttribute('position', new THREE.BufferAttribute(buf, 3))
+    geo.setDrawRange(0, 0)
+    if (pointsRef.current) {
+      pointsRef.current.geometry = geo
+    }
+  }, [])
+
+  useFrame((_state, delta) => {
+    const points = pointsRef.current
+    if (!points) return
+
+    const bloom = bloomRef.current
+
+    if (!bloom.active) {
+      points.visible = false
+      wasActiveRef.current = false
+      return
+    }
+
+    points.visible = true
+
+    const BLOOM_DURATION = 1.0
+    const geo = geoRef.current
+    const buf = posBufferRef.current
+
+    // Set color and draw range only on first active frame
+    if (!wasActiveRef.current) {
+      wasActiveRef.current = true
+      if (matRef.current) matRef.current.color.set(bloom.color)
+      geo.setDrawRange(0, bloom.particles.length)
+    }
+
+    bloom.elapsed += delta
+    const t = Math.min(bloom.elapsed / BLOOM_DURATION, 1.0)
+    const eased = 1 - Math.pow(1 - t, 3)
+
+    for (let i = 0; i < bloom.particles.length; i++) {
+      const p = bloom.particles[i]
+      buf[i * 3 + 0] = p.startX + (p.endX - p.startX) * eased
+      buf[i * 3 + 1] = p.startY + (p.endY - p.startY) * eased
+      buf[i * 3 + 2] = p.startZ + (p.endZ - p.startZ) * eased
+    }
+
+    const posAttr = geo.getAttribute('position')
+    if (posAttr) posAttr.needsUpdate = true
+
+    if (t >= 1.0) {
+      bloom.active = false
+    }
+  })
+
+  return (
+    <points ref={pointsRef}>
+      <pointsMaterial ref={matRef} size={0.25} sizeAttenuation />
+    </points>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Starfield
 // ---------------------------------------------------------------------------
 function Starfield() {
@@ -1130,6 +1224,7 @@ interface SceneProps {
   audioSetFilterCutoff: (hz: number) => void
   constellationDataRef: React.MutableRefObject<ConstellationEntry[]>
   newConstellationRef: React.MutableRefObject<ConstellationEntry | null>
+  bloomRef: React.MutableRefObject<BloomState>
 }
 
 function Scene({
@@ -1149,6 +1244,7 @@ function Scene({
   audioSetFilterCutoff,
   constellationDataRef,
   newConstellationRef,
+  bloomRef,
 }: SceneProps) {
   return (
     <>
@@ -1163,6 +1259,7 @@ function Scene({
         constellationDataRef={constellationDataRef}
         newConstellationRef={newConstellationRef}
       />
+      <BloomParticles bloomRef={bloomRef} />
       <Track tilesRef={tilesRef} tierColorRef={tierColorRef} />
       <Ball
         xRef={ball.xRef}
@@ -1218,6 +1315,15 @@ export default function App() {
   const constellationDataRef = useRef<ConstellationEntry[]>([])
   const newConstellationRef = useRef<ConstellationEntry | null>(null)
 
+  // Bloom ref — particle burst on PB-beating death
+  const bloomRef = useRef<BloomState>({
+    active: false,
+    elapsed: 0,
+    deathPos: new THREE.Vector3(),
+    color: '#7c3aed',
+    particles: [],
+  })
+
   // Personal best — read from localStorage on mount
   const bestRef = useRef<number>(0)
   useEffect(() => {
@@ -1262,6 +1368,32 @@ export default function App() {
       saveConstellation(entry)
       // Signal Constellations component to add it on the next frame
       newConstellationRef.current = entry
+
+      // Trigger death bloom — load the freshly-saved entry (index 0)
+      const savedEntry = loadConstellations()[0]
+      if (savedEntry) {
+        const deathX = ball.xRef.current
+        const deathY = ball.yRef.current
+        const deathZ = ball.zRef.current
+        const particles = savedEntry.stars.map((star, i) => ({
+          startX: deathX + i * 0.3,
+          startY: deathY + i * 0.3,
+          startZ: deathZ + i * 0.3,
+          endX: star.x,
+          endY: star.y,
+          endZ: star.z,
+        }))
+        bloomRef.current = {
+          active: true,
+          elapsed: 0,
+          deathPos: new THREE.Vector3(deathX, deathY, deathZ),
+          color: getTierColor(gameState.tierRef.current),
+          particles,
+        }
+      }
+    } else {
+      // Non-PB death — ensure bloom is inactive
+      bloomRef.current.active = false
     }
 
     // Snapshot values for overlay render
@@ -1270,7 +1402,7 @@ export default function App() {
     setIsNewBest(newBest)
     setDeadTierColor(getTierColor(gameState.tierRef.current))
     setUiPhase(GamePhase.DEAD)
-  }, [gameState, audio, newConstellationRef])
+  }, [gameState, audio, newConstellationRef, ball])
 
   const handleRestart = useCallback(() => {
     // Reset ball via encapsulated function
@@ -1290,6 +1422,9 @@ export default function App() {
 
     // Reset shake
     shakeRef.current = { active: false, elapsed: 0 }
+
+    // Cancel any active bloom
+    bloomRef.current.active = false
 
     // Restart audio
     audio.startAudio()
@@ -1417,6 +1552,7 @@ export default function App() {
           audioSetFilterCutoff={audio.setFilterCutoff}
           constellationDataRef={constellationDataRef}
           newConstellationRef={newConstellationRef}
+          bloomRef={bloomRef}
         />
       </Canvas>
 
