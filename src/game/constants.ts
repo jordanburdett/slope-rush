@@ -110,6 +110,18 @@ export const FRAGMENT_RADIUS = 0.15
 // localStorage key for personal best
 export const BEST_KEY = 'slope-rush-best'
 
+// Constellation persistence
+export const CONSTELLATION_KEY = 'slope-rush-constellations'
+export const CONSTELLATION_MAX = 50
+export const CONSTELLATION_STAR_COUNT = { min: 5, max: 8 } as const
+
+export interface ConstellationEntry {
+  distance: number           // integer meters (PB at time of run)
+  tier: SpeedTier            // tier active at moment of death
+  stars: Array<{ x: number; y: number; z: number; brightness: number }>
+  timestamp: number          // Date.now()
+}
+
 // Obstacle probability tiers by tile index
 export function getObstacleProbability(tileIndex: number): number {
   if (tileIndex < 6) return 0

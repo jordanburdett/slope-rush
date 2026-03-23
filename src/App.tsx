@@ -34,11 +34,18 @@ import {
   FRAGMENT_COUNT,
   FRAGMENT_RADIUS,
   BEST_KEY,
+  TIER_COLORS,
   ObstacleType,
   GamePhase,
   type SpeedTier,
   type GamePhase as GamePhaseType,
+  type ConstellationEntry,
 } from './game/constants'
+import {
+  generateConstellation,
+  loadConstellations,
+  saveConstellation,
+} from './game/constellations'
 import { useGameState, tickGameState } from './game/useGameState'
 import { useBallPhysics, tickBallPhysics } from './game/useBallPhysics'
 import { useTileEngine, tickTileEngine, resetTileEngine, isBallOverGap } from './game/useTileEngine'
@@ -68,6 +75,81 @@ function Starfield() {
   return (
     <points geometry={geo}>
       <pointsMaterial size={STAR_SIZE} color="#ffffff" sizeAttenuation />
+    </points>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Constellations — persisted PB star clouds
+// ---------------------------------------------------------------------------
+interface ConstellationsProps {
+  constellationDataRef: React.MutableRefObject<ConstellationEntry[]>
+  newConstellationRef: React.MutableRefObject<ConstellationEntry | null>
+}
+
+function Constellations({ constellationDataRef, newConstellationRef }: ConstellationsProps) {
+  const geoRef = useRef<THREE.BufferGeometry>(new THREE.BufferGeometry())
+  const colorsRef = useRef<Float32Array>(new Float32Array(0))
+
+  // Build flat position + color arrays from a list of entries
+  function buildBuffers(entries: ConstellationEntry[]): {
+    positions: Float32Array
+    colors: Float32Array
+  } {
+    let totalStars = 0
+    for (const entry of entries) {
+      totalStars += entry.stars.length
+    }
+    const positions = new Float32Array(totalStars * 3)
+    const colors = new Float32Array(totalStars * 3)
+    let idx = 0
+    for (const entry of entries) {
+      const c = new THREE.Color(TIER_COLORS[entry.tier])
+      for (const star of entry.stars) {
+        positions[idx * 3 + 0] = star.x
+        positions[idx * 3 + 1] = star.y
+        positions[idx * 3 + 2] = star.z
+        colors[idx * 3 + 0] = c.r * star.brightness
+        colors[idx * 3 + 1] = c.g * star.brightness
+        colors[idx * 3 + 2] = c.b * star.brightness
+        idx++
+      }
+    }
+    return { positions, colors }
+  }
+
+  // On mount: load persisted constellations and build initial geometry
+  useEffect(() => {
+    constellationDataRef.current = loadConstellations()
+    const { positions, colors } = buildBuffers(constellationDataRef.current)
+    geoRef.current.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+    geoRef.current.setAttribute('color', new THREE.BufferAttribute(colors, 3))
+    colorsRef.current = colors
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useFrame(() => {
+    const newEntry = newConstellationRef.current
+    if (newEntry !== null) {
+      // Append to data list
+      constellationDataRef.current = [newEntry, ...constellationDataRef.current]
+      // Rebuild buffers
+      const { positions, colors } = buildBuffers(constellationDataRef.current)
+      geoRef.current.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+      geoRef.current.setAttribute('color', new THREE.BufferAttribute(colors, 3))
+      const posAttr = geoRef.current.getAttribute('position')
+      const colAttr = geoRef.current.getAttribute('color')
+      if (posAttr) posAttr.needsUpdate = true
+      if (colAttr) colAttr.needsUpdate = true
+      colorsRef.current = colors
+      // Clear the signal
+      newConstellationRef.current = null
+    }
+  })
+
+  return (
+    <points geometry={geoRef.current}>
+      <pointsMaterial vertexColors size={0.2} sizeAttenuation />
     </points>
   )
 }
@@ -1046,6 +1128,8 @@ interface SceneProps {
   audioTriggerTierUp: () => void
   audioTriggerObstacle: (type: string) => void
   audioSetFilterCutoff: (hz: number) => void
+  constellationDataRef: React.MutableRefObject<ConstellationEntry[]>
+  newConstellationRef: React.MutableRefObject<ConstellationEntry | null>
 }
 
 function Scene({
@@ -1063,6 +1147,8 @@ function Scene({
   audioTriggerTierUp,
   audioTriggerObstacle,
   audioSetFilterCutoff,
+  constellationDataRef,
+  newConstellationRef,
 }: SceneProps) {
   return (
     <>
@@ -1073,6 +1159,10 @@ function Scene({
       <directionalLight position={[5, 10, 5]} intensity={0.8} castShadow />
 
       <Starfield />
+      <Constellations
+        constellationDataRef={constellationDataRef}
+        newConstellationRef={newConstellationRef}
+      />
       <Track tilesRef={tilesRef} tierColorRef={tierColorRef} />
       <Ball
         xRef={ball.xRef}
@@ -1124,6 +1214,10 @@ export default function App() {
   const [isNewBest, setIsNewBest] = useState<boolean>(false)
   const [deadTierColor, setDeadTierColor] = useState<string>('#ec4899')
 
+  // Constellation refs — data lives here, Constellations component reads them
+  const constellationDataRef = useRef<ConstellationEntry[]>([])
+  const newConstellationRef = useRef<ConstellationEntry | null>(null)
+
   // Personal best — read from localStorage on mount
   const bestRef = useRef<number>(0)
   useEffect(() => {
@@ -1152,12 +1246,22 @@ export default function App() {
     // Trigger screen shake
     shakeRef.current = { active: true, elapsed: 0 }
 
+    // Capture previous best BEFORE updating it
+    const previousBest = bestRef.current
+
     // Update personal best
     const score = Math.floor(gameState.distanceRef.current)
     const newBest = score > bestRef.current
     if (newBest) {
       bestRef.current = score
       localStorage.setItem(BEST_KEY, score.toString())
+
+      // Generate and persist constellation for this PB run
+      const currentTier = gameState.tierRef.current
+      const entry = generateConstellation(score, currentTier, previousBest)
+      saveConstellation(entry)
+      // Signal Constellations component to add it on the next frame
+      newConstellationRef.current = entry
     }
 
     // Snapshot values for overlay render
@@ -1166,7 +1270,7 @@ export default function App() {
     setIsNewBest(newBest)
     setDeadTierColor(getTierColor(gameState.tierRef.current))
     setUiPhase(GamePhase.DEAD)
-  }, [gameState, audio])
+  }, [gameState, audio, newConstellationRef])
 
   const handleRestart = useCallback(() => {
     // Reset ball via encapsulated function
@@ -1311,6 +1415,8 @@ export default function App() {
           audioTriggerTierUp={audio.triggerTierUp}
           audioTriggerObstacle={audio.triggerObstacle}
           audioSetFilterCutoff={audio.setFilterCutoff}
+          constellationDataRef={constellationDataRef}
+          newConstellationRef={newConstellationRef}
         />
       </Canvas>
 
